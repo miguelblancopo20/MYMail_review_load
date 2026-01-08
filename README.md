@@ -100,6 +100,7 @@ Se construye copiando `Plantilla_Stats.xlsx` y anadiendo hojas con la informacio
 - `Revision_*` y `Revision_Pesos`
 
 Nota: si `Plantilla_Stats.xlsx` esta abierto en Excel, el script no podra copiarlo y mostrara un `[WARN]`.
+Nota 2: si la plantilla esta en OneDrive (Files On-Demand), asegurate de que el fichero este descargado ("Always keep on this device") o copia la plantilla fuera de OneDrive.
 
 Subcomandos:
 

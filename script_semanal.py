@@ -671,13 +671,10 @@ def generar_stats_desde_outputs(fecha: str, template_path: str | None = None, ou
     try:
         shutil.copy2(tpl, out)
     except PermissionError as exc:
-        print(f"[WARN] No se puede leer/copiar la plantilla (¿esta abierta en Excel?): {tpl} ({exc})")
+        print(f"[WARN] No se puede leer/copiar la plantilla (esta abierta en Excel?): {tpl} ({exc})")
         return
     except FileNotFoundError as exc:
-        if Path(tpl).exists():
-            print(f"[WARN] No se pudo copiar la plantilla aunque existe (posible OneDrive/placeholder): {tpl} ({exc})")
-        else:
-            print(f"[WARN] No existe la plantilla: {tpl}")
+        print(f"[WARN] No se pudo copiar la plantilla (posible OneDrive/placeholder): {tpl} ({exc})")
         try:
             wb_tpl = load_workbook(tpl)
             wb_tpl.save(out)
@@ -1031,16 +1028,16 @@ def laura_load_inputs(folder: str, segmento_csv: str):
 
 
 def laura_build_merged_df(df_ia: pd.DataFrame, df_rpa: pd.DataFrame) -> pd.DataFrame:
-    df_rpa = df_rpa.drop_duplicates(subset=["IDU"], keep="first")
+    df_rpa = df_rpa.drop_duplicates(subset=["IDU"], keep="first").copy()
     df_rpa["IDU"] = df_rpa["IDU"].fillna("").astype(str)
-    df_rpa = df_rpa.drop_duplicates(subset=["IDU"])
-    df_rpa = df_rpa[df_rpa["IDU"].isin(df_ia["idLotus"])]
+    df_rpa = df_rpa.drop_duplicates(subset=["IDU"]).copy()
+    df_rpa = df_rpa[df_rpa["IDU"].isin(df_ia["idLotus"])].copy()
 
     merged_df = pd.merge(df_ia, df_rpa, left_on="idLotus", right_on="IDU", how="inner")
     merged_df = merged_df.drop_duplicates(subset=["IDU"])
 
     merged_df["Sublocation"] = merged_df.apply(
-        lambda x: "Duplicado de factura" if "Duplicado de factura" in x.Sublocation else x.Sublocation, axis=1
+        lambda x: "Duplicado de factura" if "Duplicado de factura" in str(x.Sublocation) else x.Sublocation, axis=1
     )
     merged_df["Location"] = merged_df.apply(
         lambda x: "Categoría no contemplada" if "Categoría no contemplada" in x.Location else x.Location, axis=1

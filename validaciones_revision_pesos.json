@@ -1,0 +1,19 @@
+{
+  "default": 1.0,
+  "automatismo": {
+    "Apertura avería fijo": 1.0,
+    "Apertura avería móvil": 1.0,
+    "Baja de linea": 1.0,
+    "Desvio de llamadas": 1.0,
+    "Duplicado de factura": 1.0,
+    "Reparacion Terminales": 1.0,
+    "Servicio multisim": 1.0,
+    "Tramitar servicios": 1.0
+  },
+  "segmento": {
+    "GGCC": 1.0,
+    "ME": 1.0,
+    "PE": 1.0
+  },
+  "pair": {}
+}

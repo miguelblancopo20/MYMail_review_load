@@ -319,6 +319,13 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     ws = wb["Sheet1"] if "Sheet1" in wb.sheetnames else wb.active
 
     ws.cell(row=1, column=3).value = fecha
+    pct_number_format = "0.0%"
+
+    def _format_pct_row(row: int) -> None:
+        for col in (3, 4, 5, 6):
+            cell = ws.cell(row=row, column=col)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = pct_number_format
 
     def _set_row(row: int, ggcc=None, me=None, pe=None, agg=None, only_agg: bool = False):
         if not only_agg:
@@ -338,6 +345,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
         _pct(fichas["PE"], tematicas["PE"]),
         _pct(_agregado(fichas), _agregado(tematicas)),
     )
+    _format_pct_row(7)
 
     def _fill_block(
         total_row: int,
@@ -358,6 +366,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
             _pct(total_counts["PE"], total_correos["PE"]),
             _pct(total_agg, _agregado(total_correos)),
         )
+        _format_pct_row(pct_row)
         _set_row(boton_row, boton_counts["GC"], boton_counts["ME"], boton_counts["PE"], boton_agg)
         _set_row(
             pct_boton_row,
@@ -366,6 +375,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
             _pct(boton_counts["PE"], total_counts["PE"]),
             _pct(boton_agg, total_agg),
         )
+        _format_pct_row(pct_boton_row)
 
     dup_total = _counts_from_map(map_sub, "Duplicado de factura", (seg_gc_sub, seg_me_sub, seg_pe_sub))
     dup_boton = _counts_from_map(map_fichas, "Duplicado de factura", ("GGCC", "ME", "PE"))

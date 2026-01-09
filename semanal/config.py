@@ -22,6 +22,7 @@ def get_config() -> dict:
 
 
 def load_config(config_path: str | None = None) -> dict:
+    #---(infra) Config---- Carga `.config` (JSON) y deja el config disponible via `cfg_get()`.
     root = repo_root()
     candidates = []
     if config_path:

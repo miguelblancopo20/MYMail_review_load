@@ -84,6 +84,9 @@ Outputs en `data/<fecha>/output/`:
 - `ejecuciones.xlsx`
 - `validaciones_revision.xlsx`
 - `mails_por_subtematica.xlsx` (si estan `ia.csv` y `rpa.csv`)
+- `Categoría_No_Contemplada.xlsx` (filtrado de `ia-transacciones.csv` por `Sublocation = Categoría no contemplada`)
+- `Otros.xlsx` (filtrado de `ia-transacciones.csv` por `Sublocation = Otros`, incluye `Pivot` por `Location`)
+- `all.xlsx` (cruce de validaciones + ia-transacciones + ejecuciones + fichas levantadas, 1 fila por correo)
 - `Stats_<fecha>.xlsx` (basado en `Plantilla_Stats.xlsx`)
 
 #### Stats `Stats_<fecha>.xlsx`

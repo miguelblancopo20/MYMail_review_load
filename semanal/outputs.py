@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def fichas_levantadas(fecha: str) -> None:
+    #---2. Fichas levantadas---- Lee `fichas_levantadas.csv` y genera `fichas_levantadas.xlsx` (Data + Pivot).
     logger.info("Fichas levantadas: inicio (fecha=%s)", fecha)
     base_dir, output_dir = get_dirs(fecha)
     df = pd.read_csv(base_dir / str(cfg_get("inputs.fichas_levantadas_csv", "fichas_levantadas.csv")))
@@ -60,13 +61,29 @@ def fichas_levantadas(fecha: str) -> None:
 
 
 def validados(fecha: str) -> None:
+    #---1. Validaciones---- Enriquecer con `ia-transacciones.csv`, y generar `validaciones.xlsx` (Data + Pivot + estilos).
     logger.info("Validaciones: inicio (fecha=%s)", fecha)
     base_dir, output_dir = get_dirs(fecha)
     df = pd.read_csv(base_dir / str(cfg_get("inputs.validaciones_csv", "validaciones.csv")))
     df = df.drop_duplicates(subset=["IdCorreo"], keep="first")
 
     df_ia = pd.read_csv(base_dir / str(cfg_get("inputs.ia_transacciones_csv", "ia-transacciones.csv")), sep=";")
-    df_ia = df_ia[["idLotus", "Location", "Sublocation", "Subject", "Question", "MailToAgent"]]
+    if "@timestamp" in df_ia.columns:
+        df_ia = df_ia.rename(columns={"@timestamp": "IA_timestamp"})
+    if "IA_timestamp" not in df_ia.columns:
+        df_ia["IA_timestamp"] = ""
+    df_ia = df_ia[
+        [
+            "idLotus",
+            "IA_timestamp",
+            "Location",
+            "Sublocation",
+            "Subject",
+            "Question",
+            "MailToAgent",
+        ]
+    ]
+    df_ia = df_ia.drop_duplicates(subset=["idLotus"], keep="first")
 
     df = pd.merge(df, df_ia, how="left", left_on="IdCorreo", right_on="idLotus")
     df["Faltan datos?"] = df.apply(lambda x: faltan_datos(x.Automatismo, x.MailToAgent), axis=1)
@@ -115,6 +132,7 @@ def faltan_datos(automatismo, mta) -> bool:
 
 
 def ejecuciones(fecha: str) -> None:
+    #---3. Ejecuciones---- Cruza VALIDADO vs `orquestador_contexto.csv` y genera `ejecuciones.xlsx` (Data + Pivot).
     logger.info("Ejecuciones: inicio (fecha=%s)", fecha)
     base_dir, output_dir = get_dirs(fecha)
     df_validaciones = pd.read_excel(
@@ -150,10 +168,13 @@ def ejecuciones(fecha: str) -> None:
         ejecutados = df_cruce["IDU contexto"].notna().sum()
         porcentaje = (100 * ejecutados / total_validados) if total_validados else 0
 
-        print(f"**{automatismo}:")
-        print(f"Validados: {total_validados}")
-        print(f"Ejecutados: {ejecutados}")
-        print(f"Porcentaje: {porcentaje}\n")
+        logger.info(
+            "Ejecuciones: %s | Validados=%s Ejecutados=%s Porcentaje=%.2f",
+            automatismo,
+            total_validados,
+            ejecutados,
+            porcentaje,
+        )
 
     output_path = output_dir / str(cfg_get("outputs.ejecuciones_xlsx", "ejecuciones.xlsx"))
 

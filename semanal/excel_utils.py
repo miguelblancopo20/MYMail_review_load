@@ -4,13 +4,15 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 
 
 def aplicar_estilos_validaciones_excel(excel_path: Path) -> None:
+    #---1. Validaciones (util)---- Aplica colores a la cabecera de `validaciones.xlsx` (hoja Data).
     header_azul = {"idLotus", "Location", "Sublocation", "Subject", "Question", "MailToAgent", "Faltan datos?"}
     fill_azul = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     fill_verde = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+    font_blanca = Font(color="FFFFFF", bold=True)
 
     wb = load_workbook(excel_path)
     ws = wb["Data"] if "Data" in wb.sheetnames else wb.active
@@ -20,6 +22,7 @@ def aplicar_estilos_validaciones_excel(excel_path: Path) -> None:
             cell.fill = fill_azul
         else:
             cell.fill = fill_verde
+        cell.font = font_blanca
 
     wb.save(excel_path)
 
@@ -27,6 +30,7 @@ def aplicar_estilos_validaciones_excel(excel_path: Path) -> None:
 def reordenar_pivot_blank(
     pivot: pd.DataFrame, blank_label: str, after_column: str, keep_total_last: bool = False
 ) -> pd.DataFrame:
+    #---2/3. Pivots (util)---- Reordena columnas/filas para colocar `(blank)` y `Total` en posiciones concretas.
     cols = list(pivot.columns)
     idx = list(pivot.index)
 
@@ -60,6 +64,7 @@ def reordenar_pivot_blank_multiindex(
     after_segment: str,
     total_label: str = "Total",
 ) -> pd.DataFrame:
+    #---3. Pivots (util)---- Variante para pivots con columnas MultiIndex (p.ej. Encontrados|Segmento).
     if not isinstance(pivot.columns, pd.MultiIndex) or pivot.columns.nlevels != 2:
         return pivot
 
@@ -98,4 +103,3 @@ def reordenar_pivot_blank_multiindex(
         ordered_cols.extend([c for c in total_cols if c not in ordered_cols])
 
     return pivot.reindex(index=ordered_idx, columns=ordered_cols)
-

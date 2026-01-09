@@ -136,6 +136,7 @@ def _allocate_samples(strata: list[dict], total_n: int) -> list[int]:
 
 
 def generar_validaciones_revision(fecha: str, sample_size: int = 150, min_full_stratum: int = 5) -> None:
+    #---4. Revision NO VALIDADOS---- Muestreo estratificado y genera `validaciones_revision.xlsx` (Data + Resumen).
     logger.info(
         "Revision validaciones: inicio (fecha=%s, sample_size=%s, min_full_stratum=%s)",
         fecha,

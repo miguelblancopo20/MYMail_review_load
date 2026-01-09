@@ -16,7 +16,122 @@ from .subtematicas import build_merged_df
 logger = logging.getLogger(__name__)
 
 
+def _stats_from_validaciones(fecha: str, base_dir: Path, output_dir: Path, safe_read_excel) -> dict[str, pd.DataFrame]:
+    # Paso a paso:
+    # 1) Leer `validaciones.xlsx` (hoja Data) si existe.
+    # 2) Generar un resumen general (totales y NO VALIDADOS).
+    # 3) Generar distribucion por `Validado` (si aplica).
+    # 4) Adjuntar la hoja Pivot (si existe).
+    validaciones_xlsx = output_dir / str(cfg_get("outputs.validaciones_xlsx", "validaciones.xlsx"))
+    dfs: dict[str, pd.DataFrame] = {}
+
+    df_val_data = safe_read_excel(validaciones_xlsx, "Data")
+    if df_val_data is not None:
+        resumen = {
+            "fecha": fecha,
+            "folder": str(base_dir),
+            "validaciones_total": int(df_val_data.shape[0]),
+            "validaciones_no_validados": int((df_val_data.get("Validado") != "VALIDADO").sum())
+            if "Validado" in df_val_data.columns
+            else "",
+        }
+        dfs["Resumen_General"] = pd.DataFrame([resumen])
+        if "Validado" in df_val_data.columns:
+            dfs["Validaciones_x_Validado"] = (
+                df_val_data["Validado"].fillna("(blank)").astype(str).value_counts().reset_index().rename(
+                    columns={"index": "Validado", "Validado": "Count"}
+                )
+            )
+
+    df_pivot = safe_read_excel(validaciones_xlsx, "Pivot")
+    if df_pivot is not None:
+        dfs["Validaciones_Pivot"] = df_pivot
+
+    return dfs
+
+
+def _build_stats_dfs(fecha: str, base_dir: Path, output_dir: Path) -> dict[str, pd.DataFrame]:
+    # Paso a paso:
+    # 1) Definir una lectura segura de Excels (devuelve None si no existe el fichero).
+    # 2) Construir DataFrames auxiliares a partir de los outputs del semanal.
+    # 3) Devolver un dict hoja->DataFrame listo para volcar a Excel.
+    def safe_read_excel(path: Path, sheet: str):
+        if not path.exists():
+            return None
+        try:
+            return pd.read_excel(path, sheet_name=sheet)
+        except Exception as exc:
+            return pd.DataFrame([{"WARN": f"No se pudo leer {path.name}:{sheet} -> {exc}"}])
+
+    fichas_xlsx = output_dir / str(cfg_get("outputs.fichas_levantadas_xlsx", "fichas_levantadas.xlsx"))
+    ejecuciones_xlsx = output_dir / str(cfg_get("outputs.ejecuciones_xlsx", "ejecuciones.xlsx"))
+    subtematicas_xlsx = output_dir / str(cfg_get("outputs.subtematicas_xlsx", "mails_por_subtematica.xlsx"))
+    revision_xlsx = output_dir / str(cfg_get("outputs.revision_xlsx", "validaciones_revision.xlsx"))
+
+    dfs: dict[str, pd.DataFrame] = {}
+
+    # (A) Validaciones (extraido a helper)
+    dfs.update(_stats_from_validaciones(fecha, base_dir, output_dir, safe_read_excel))
+
+    # (B) Fichas / Ejecuciones (Data + Pivot)
+    for sheet, name in [("Pivot", "Fichas_Pivot"), ("Data", "Fichas_Data")]:
+        df_sheet = safe_read_excel(fichas_xlsx, sheet)
+        if df_sheet is not None:
+            dfs[name] = df_sheet
+
+    for sheet, name in [("Pivot", "Ejecuciones_Pivot"), ("Data", "Ejecuciones_Data")]:
+        df_sheet = safe_read_excel(ejecuciones_xlsx, sheet)
+        if df_sheet is not None:
+            dfs[name] = df_sheet
+
+    # (C) Subtematicas (si existe)
+    for sheet, name in [
+        ("Resumen", "Subtematicas_Resumen"),
+        ("Mails_Subtematica", "Subtematicas_Subtematica"),
+        ("Mails_Tematica", "Subtematicas_Tematica"),
+        ("Mails_Status", "Subtematicas_Status"),
+        ("CIFs_Segmento_Total", "Subtematicas_Segmento_Total"),
+        ("Seg_x_Subtematica", "Subtematicas_Seg_x_Subtematica"),
+        ("Seg_x_Tematica", "Subtematicas_Seg_x_Tematica"),
+    ]:
+        df_sheet = safe_read_excel(subtematicas_xlsx, sheet)
+        if df_sheet is not None:
+            dfs[name] = df_sheet
+
+    # (D) Revision (si existe)
+    for sheet, name in [("Resumen", "Revision_Resumen"), ("Data", "Revision_Data")]:
+        df_sheet = safe_read_excel(revision_xlsx, sheet)
+        if df_sheet is not None:
+            dfs[name] = df_sheet
+
+    # (E) Pesos de revision (si existe)
+    weights_path = repo_root() / str(cfg_get("paths.revision_weights", "validaciones_revision_pesos.json"))
+    if weights_path.exists():
+        try:
+            weights = json.loads(weights_path.read_text(encoding="utf-8"))
+            flat = [{"scope": "default", "key": "default", "weight": weights.get("default", 1.0)}]
+            for k, v in (weights.get("automatismo") or {}).items():
+                flat.append({"scope": "automatismo", "key": k, "weight": v})
+            for k, v in (weights.get("segmento") or {}).items():
+                flat.append({"scope": "segmento", "key": k, "weight": v})
+            for k, v in (weights.get("pair") or {}).items():
+                flat.append({"scope": "pair", "key": k, "weight": v})
+            dfs["Revision_Pesos"] = pd.DataFrame(flat)
+        except Exception as exc:
+            dfs["Revision_Pesos"] = pd.DataFrame([{"WARN": f"No se pudo leer pesos JSON: {exc}"}])
+
+    return dfs
+
+
 def generar_stats_desde_outputs(fecha: str, template_path: str | None = None, output_path: str | None = None) -> None:
+    #---6. Stats---- Copia plantilla y agrega hojas (Resumen/Pivots/Subtematicas/Revision) en `Stats_{fecha}.xlsx`.
+    # Paso a paso:
+    # 1) Resolver ruta de plantilla y salida.
+    # 2) Copiar la plantilla al output (con fallbacks OneDrive/Excel-abierto).
+    # 3) Construir hojas auxiliares desde los Excels del semanal.
+    # 4) Anadir/reemplazar hojas auxiliares en el workbook de salida.
+    # 5) Rellenar `Sheet1` con KPIs (si existen los Excels necesarios).
+    # 6) Loggear la ruta final.
     logger.info("Stats: inicio (fecha=%s)", fecha)
     base_dir, output_dir = get_dirs(fecha)
 
@@ -38,7 +153,7 @@ def generar_stats_desde_outputs(fecha: str, template_path: str | None = None, ou
 
     if tpl is None:
         checked = ", ".join(str(p) for p in tpl_candidates)
-        print(f"[WARN] No existe la plantilla. Rutas comprobadas: {checked}")
+        logger.warning("Stats: no existe la plantilla. Rutas comprobadas: %s", checked)
         return
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -46,117 +161,26 @@ def generar_stats_desde_outputs(fecha: str, template_path: str | None = None, ou
     try:
         shutil.copy2(tpl, out)
     except PermissionError as exc:
-        print(f"[WARN] No se puede leer/copiar la plantilla (esta abierta en Excel?): {tpl} ({exc})")
+        logger.warning("Stats: no se puede leer/copiar la plantilla (esta abierta en Excel?): %s (%s)", tpl, exc)
         return
     except FileNotFoundError as exc:
-        print(f"[WARN] No se pudo copiar la plantilla (posible OneDrive/placeholder): {tpl} ({exc})")
+        logger.warning("Stats: no se pudo copiar la plantilla (posible OneDrive/placeholder): %s (%s)", tpl, exc)
         try:
             wb_tpl = load_workbook(tpl)
             wb_tpl.save(out)
         except Exception as exc2:
-            print(f"[WARN] Fallback openpyxl fallo copiando plantilla: {exc2}")
+            logger.warning("Stats: fallback openpyxl fallo copiando plantilla: %s", exc2)
             return
     except OSError as exc:
-        print(f"[WARN] Error copiando plantilla: {tpl} ({exc})")
+        logger.warning("Stats: error copiando plantilla: %s (%s)", tpl, exc)
         try:
             wb_tpl = load_workbook(tpl)
             wb_tpl.save(out)
         except Exception as exc2:
-            print(f"[WARN] Fallback openpyxl fallo copiando plantilla: {exc2}")
+            logger.warning("Stats: fallback openpyxl fallo copiando plantilla: %s", exc2)
             return
 
-    def safe_read_excel(path: Path, sheet: str):
-        if not path.exists():
-            return None
-        try:
-            return pd.read_excel(path, sheet_name=sheet)
-        except Exception as exc:
-            return pd.DataFrame([{"WARN": f"No se pudo leer {path.name}:{sheet} -> {exc}"}])
-
-    validaciones_xlsx = output_dir / str(cfg_get("outputs.validaciones_xlsx", "validaciones.xlsx"))
-    fichas_xlsx = output_dir / str(cfg_get("outputs.fichas_levantadas_xlsx", "fichas_levantadas.xlsx"))
-    ejecuciones_xlsx = output_dir / str(cfg_get("outputs.ejecuciones_xlsx", "ejecuciones.xlsx"))
-    subtematicas_xlsx = output_dir / str(cfg_get("outputs.subtematicas_xlsx", "mails_por_subtematica.xlsx"))
-    revision_xlsx = output_dir / str(cfg_get("outputs.revision_xlsx", "validaciones_revision.xlsx"))
-
-    dfs: dict[str, pd.DataFrame] = {}
-
-    df_val_data = safe_read_excel(validaciones_xlsx, "Data")
-    if df_val_data is not None:
-        resumen = {
-            "fecha": fecha,
-            "folder": str(base_dir),
-            "validaciones_total": int(df_val_data.shape[0]),
-            "validaciones_no_validados": int((df_val_data.get("Validado") != "VALIDADO").sum())
-            if "Validado" in df_val_data.columns
-            else "",
-        }
-        dfs["Resumen_General"] = pd.DataFrame([resumen])
-        if "Validado" in df_val_data.columns:
-            dfs["Validaciones_x_Validado"] = (
-                df_val_data["Validado"].fillna("(blank)").astype(str).value_counts().reset_index().rename(
-                    columns={"index": "Validado", "Validado": "Count"}
-                )
-            )
-
-    for sheet, name in [
-        ("Pivot", "Validaciones_Pivot"),
-    ]:
-        df_sheet = safe_read_excel(validaciones_xlsx, sheet)
-        if df_sheet is not None:
-            dfs[name] = df_sheet
-
-    for sheet, name in [
-        ("Pivot", "Fichas_Pivot"),
-        ("Data", "Fichas_Data"),
-    ]:
-        df_sheet = safe_read_excel(fichas_xlsx, sheet)
-        if df_sheet is not None:
-            dfs[name] = df_sheet
-
-    for sheet, name in [
-        ("Pivot", "Ejecuciones_Pivot"),
-        ("Data", "Ejecuciones_Data"),
-    ]:
-        df_sheet = safe_read_excel(ejecuciones_xlsx, sheet)
-        if df_sheet is not None:
-            dfs[name] = df_sheet
-
-    for sheet, name in [
-        ("Resumen", "Subtematicas_Resumen"),
-        ("Mails_Subtematica", "Subtematicas_Subtematica"),
-        ("Mails_Tematica", "Subtematicas_Tematica"),
-        ("Mails_Status", "Subtematicas_Status"),
-        ("CIFs_Segmento_Total", "Subtematicas_Segmento_Total"),
-        ("Seg_x_Subtematica", "Subtematicas_Seg_x_Subtematica"),
-        ("Seg_x_Tematica", "Subtematicas_Seg_x_Tematica"),
-    ]:
-        df_sheet = safe_read_excel(subtematicas_xlsx, sheet)
-        if df_sheet is not None:
-            dfs[name] = df_sheet
-
-    for sheet, name in [
-        ("Resumen", "Revision_Resumen"),
-        ("Data", "Revision_Data"),
-    ]:
-        df_sheet = safe_read_excel(revision_xlsx, sheet)
-        if df_sheet is not None:
-            dfs[name] = df_sheet
-
-    weights_path = repo_root() / str(cfg_get("paths.revision_weights", "validaciones_revision_pesos.json"))
-    if weights_path.exists():
-        try:
-            weights = json.loads(weights_path.read_text(encoding="utf-8"))
-            flat = [{"scope": "default", "key": "default", "weight": weights.get("default", 1.0)}]
-            for k, v in (weights.get("automatismo") or {}).items():
-                flat.append({"scope": "automatismo", "key": k, "weight": v})
-            for k, v in (weights.get("segmento") or {}).items():
-                flat.append({"scope": "segmento", "key": k, "weight": v})
-            for k, v in (weights.get("pair") or {}).items():
-                flat.append({"scope": "pair", "key": k, "weight": v})
-            dfs["Revision_Pesos"] = pd.DataFrame(flat)
-        except Exception as exc:
-            dfs["Revision_Pesos"] = pd.DataFrame([{"WARN": f"No se pudo leer pesos JSON: {exc}"}])
+    dfs = _build_stats_dfs(fecha, base_dir, output_dir)
 
     with pd.ExcelWriter(out, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         for sheet_name, df in dfs.items():
@@ -172,6 +196,11 @@ def generar_stats_desde_outputs(fecha: str, template_path: str | None = None, ou
 
 
 def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, output_dir: Path) -> None:
+    # Paso a paso:
+    # 1) Leer pivots necesarios (`Seg_x_Tematica`, `Seg_x_Subtematica`, `fichas_levantadas.xlsx`).
+    # 2) Normalizar keys para buscar filas por texto (ignorando mayus/acentos).
+    # 3) Calcular totales + porcentajes y rellenar celdas fijas en `Sheet1`.
+    # 4) Guardar el workbook.
     subtematicas_xlsx = output_dir / str(cfg_get("outputs.subtematicas_xlsx", "mails_por_subtematica.xlsx"))
     fichas_xlsx = output_dir / str(cfg_get("outputs.fichas_levantadas_xlsx", "fichas_levantadas.xlsx"))
 
@@ -260,12 +289,13 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
         map_sub,
         [
             "Duplicado de factura",
-            "Baja Lヴnea",
+            "Baja Línea",
+            "Baja Línea Fija",
             "Alta PS",
             "Baja PS",
-            "Apertura Averヴa Fijo",
-            "Apertura Averヴa MИvil",
-            "Desvヴos Llamadas",
+            "Apertura Avería Fijo",
+            "Apertura Avería Móvil",
+            "Desvíos Llamadas",
             "Servicio Multisim",
         ],
         (seg_gc_sub, seg_me_sub, seg_pe_sub),
@@ -277,8 +307,8 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
             "Duplicado de factura",
             "Baja de linea",
             "Tramitar servicios",
-            "Apertura averヴa fijo",
-            "Apertura averヴa mИvil",
+            "Apertura avería fijo",
+            "Apertura avería móvil",
             "Desvio de llamadas",
             "Servicio multisim",
         ],
@@ -341,7 +371,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     dup_boton = _counts_from_map(map_fichas, "Duplicado de factura", ("GGCC", "ME", "PE"))
     _fill_block(9, 10, 11, 12, dup_total, dup_boton)
 
-    baja_total = _counts_from_map(map_sub, "Baja Lヴnea", (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    baja_total = _sum_counts(map_sub, ["Baja Línea", "Baja Línea Fija"], (seg_gc_sub, seg_me_sub, seg_pe_sub))
     baja_boton = _counts_from_map(map_fichas, "Baja de linea", ("GGCC", "ME", "PE"))
     _fill_block(14, 15, 16, 17, baja_total, baja_boton)
 
@@ -349,15 +379,15 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     ayb_boton = _counts_from_map(map_fichas, "Tramitar servicios", ("GGCC", "ME", "PE"))
     _fill_block(19, 20, 21, 22, ayb_total, ayb_boton)
 
-    fijo_total = _counts_from_map(map_sub, "Apertura Averヴa Fijo", (seg_gc_sub, seg_me_sub, seg_pe_sub))
-    fijo_boton = _counts_from_map(map_fichas, "Apertura averヴa fijo", ("GGCC", "ME", "PE"))
+    fijo_total = _counts_from_map(map_sub, "Apertura Avería Fijo", (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    fijo_boton = _counts_from_map(map_fichas, "Apertura avería fijo", ("GGCC", "ME", "PE"))
     _fill_block(24, 25, 26, 27, fijo_total, fijo_boton)
 
-    movil_total = _counts_from_map(map_sub, "Apertura Averヴa MИvil", (seg_gc_sub, seg_me_sub, seg_pe_sub))
-    movil_boton = _counts_from_map(map_fichas, "Apertura averヴa mИvil", ("GGCC", "ME", "PE"))
+    movil_total = _counts_from_map(map_sub, "Apertura Avería Móvil", (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    movil_boton = _counts_from_map(map_fichas, "Apertura avería móvil", ("GGCC", "ME", "PE"))
     _fill_block(29, 30, 31, 32, movil_total, movil_boton)
 
-    desvio_total = _counts_from_map(map_sub, "Desvヴos Llamadas", (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    desvio_total = _counts_from_map(map_sub, "Desvíos Llamadas", (seg_gc_sub, seg_me_sub, seg_pe_sub))
     desvio_boton = _counts_from_map(map_fichas, "Desvio de llamadas", ("GGCC", "ME", "PE"))
     _fill_block(34, 35, 36, 37, desvio_total, desvio_boton)
 

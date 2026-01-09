@@ -8,6 +8,7 @@ def repo_root() -> Path:
 
 
 def get_dirs(fecha: str) -> tuple[Path, Path]:
+    #---(infra) Rutas---- Construye `data/<fecha>/` y `data/<fecha>/output/` segun `.config`.
     from .config import cfg_get
 
     data_dir = cfg_get("paths.data_dir", "data")

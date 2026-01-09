@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,18 @@ from .config import cfg_get
 from .paths import get_dirs
 
 logger = logging.getLogger(__name__)
+
+IA_COLS_ORDER = [
+    "idLotus",
+    "IA_timestamp",
+    "Location",
+    "Sublocation",
+    "Subject",
+    "Question",
+    "MailToAgent",
+]
+
+_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
 def _stable_unique_join(series: pd.Series) -> str:
@@ -21,10 +34,59 @@ def _stable_unique_join(series: pd.Series) -> str:
     return " | ".join(seen)
 
 
+def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df = df.copy()
+    obj_cols = df.select_dtypes(include=["object"]).columns
+    for col in obj_cols:
+        df[col] = df[col].map(lambda v: _ILLEGAL_XLSX_CHARS_RE.sub("", v) if isinstance(v, str) else v)
+    return df
+
+
+def _read_ia_transacciones(base_dir: Path) -> pd.DataFrame:
+    ia_path = base_dir / str(cfg_get("inputs.ia_transacciones_csv", "ia-transacciones.csv"))
+    try:
+        df_ia = pd.read_csv(ia_path, sep=";", low_memory=False)
+    except FileNotFoundError:
+        logger.warning("All: no existe %s; se sigue sin base IA", ia_path)
+        return pd.DataFrame()
+    except Exception as exc:
+        logger.warning("All: no se pudo leer %s: %s", ia_path, exc)
+        return pd.DataFrame()
+
+    if df_ia.empty:
+        return df_ia
+
+    if "@timestamp" in df_ia.columns:
+        df_ia = df_ia.rename(columns={"@timestamp": "IA_timestamp"})
+    if "IA_timestamp" not in df_ia.columns:
+        df_ia["IA_timestamp"] = ""
+
+    if "idLotus" not in df_ia.columns:
+        logger.warning("All: %s no tiene columna 'idLotus'; se sigue sin base IA", ia_path)
+        return pd.DataFrame()
+
+    df_ia = df_ia.copy()
+    df_ia["IdCorreo"] = df_ia["idLotus"].fillna("").astype(str).str.split("-").str[0]
+
+    # Mantener solo columnas relevantes si existen (para reducir peso del merge).
+    keep = ["IdCorreo"] + [c for c in IA_COLS_ORDER if c in df_ia.columns]
+    extra = [c for c in df_ia.columns if c not in set(keep)]
+    if extra:
+        df_ia = df_ia[keep]
+
+    if "IA_timestamp" in df_ia.columns:
+        ts = pd.to_datetime(df_ia["IA_timestamp"], errors="coerce", format="mixed")
+        df_ia = df_ia.assign(_ia_ts=ts).sort_values("_ia_ts", ascending=False).drop(columns=["_ia_ts"])
+    df_ia = df_ia.drop_duplicates(subset=["IdCorreo"], keep="first")
+    return df_ia
+
+
 def generar_all_xlsx(fecha: str) -> None:
     #---7. All---- Cruza validaciones + ia-transacciones + ejecuciones + fichas_levantadas y genera `all.xlsx` (1 fila por correo).
     # Paso a paso:
-    # 1) Leer los Excels generados (`validaciones.xlsx`, `ejecuciones.xlsx`, `fichas_levantadas.xlsx`).
+    # 1) Leer `ia-transacciones.csv` (base) y los Excels generados (`validaciones.xlsx`, `ejecuciones.xlsx`, `fichas_levantadas.xlsx`).
     # 2) Normalizar claves de correo y deduplicar a 1 fila por correo en cada fuente.
     # 3) Agregar fichas/orquestador a columnas resumen para mantener 1 fila por correo.
     # 4) Cruce final (outer join) y orden de columnas.
@@ -40,6 +102,8 @@ def generar_all_xlsx(fecha: str) -> None:
         return pd.read_excel(path, sheet_name=sheet)
 
     logger.info("All: inicio (fecha=%s)", fecha)
+
+    df_ia = _read_ia_transacciones(base_dir)
 
     try:
         df_val = _read_xlsx(validaciones_path, "Data")
@@ -59,18 +123,20 @@ def generar_all_xlsx(fecha: str) -> None:
         logger.warning("All: no se pudo leer %s (Data): %s", fichas_path, exc)
         df_fichas = pd.DataFrame()
 
-    if df_val.empty and df_eje.empty and df_fichas.empty:
-        logger.warning("All: sin datos de entrada (validaciones/ejecuciones/fichas) -> no se genera %s", out_path)
+    if df_ia.empty and df_val.empty and df_eje.empty and df_fichas.empty:
+        logger.warning("All: sin datos de entrada (ia/validaciones/ejecuciones/fichas) -> no se genera %s", out_path)
         return
 
-    # (A) Validaciones base
+    # (A) Validaciones (sin columnas IA, porque `all` parte de `ia-transacciones.csv`)
     if "IdCorreo" in df_val.columns:
         df_val["IdCorreo"] = df_val["IdCorreo"].fillna("").astype(str).str.split("-").str[0]
-        # asegurar 1 fila por correo (si el merge con ia-transacciones generase duplicados)
         if "@timestamp" in df_val.columns:
             ts = pd.to_datetime(df_val["@timestamp"], errors="coerce")
             df_val = df_val.assign(_ts=ts).sort_values("_ts", ascending=False).drop(columns=["_ts"])
         df_val = df_val.drop_duplicates(subset=["IdCorreo"], keep="first")
+        drop_ia_cols = [c for c in dict.fromkeys(["idLotus", *IA_COLS_ORDER]) if c in df_val.columns]
+        if drop_ia_cols:
+            df_val = df_val.drop(columns=drop_ia_cols)
 
     # (B) Ejecuciones (solo columnas propias)
     df_eje_agg = pd.DataFrame()
@@ -134,7 +200,11 @@ def generar_all_xlsx(fecha: str) -> None:
         df_fichas_agg["Tiene_Ficha"] = df_fichas_agg["Fichas_rows"].apply(lambda n: "SI" if int(n or 0) > 0 else "NO")
 
     # (D) Cruce final
-    if not df_val.empty and "IdCorreo" in df_val.columns:
+    started_from_ia = False
+    if not df_ia.empty and "IdCorreo" in df_ia.columns:
+        df_all = df_ia.copy()
+        started_from_ia = True
+    elif not df_val.empty and "IdCorreo" in df_val.columns:
         df_all = df_val.copy()
     else:
         ids = pd.Index([])
@@ -143,23 +213,60 @@ def generar_all_xlsx(fecha: str) -> None:
                 ids = ids.union(df[col].fillna("").astype(str))
         df_all = pd.DataFrame({"IdCorreo": ids})
 
+    # IA como base (si existe) o como enriquecimiento (si no se pudo usar de base).
+    if not df_ia.empty and not started_from_ia:
+        df_all = df_all.merge(df_ia, on="IdCorreo", how="outer")
+
+    # Enriquecer con validaciones (manteniendo la base IA si aplica).
+    if not df_val.empty:
+        df_all = df_all.merge(df_val, on="IdCorreo", how="left" if started_from_ia else "outer")
+
     if not df_eje_agg.empty:
         df_all = df_all.merge(df_eje_agg, on="IdCorreo", how="outer")
     if not df_fichas_agg.empty:
         df_all = df_all.merge(df_fichas_agg, on="IdCorreo", how="outer")
 
-    # Orden de columnas: IdCorreo primero, luego validaciones, luego ejecuciones, luego fichas.
+    # Orden de columnas: IdCorreo, IA, validaciones, ejecuciones, fichas.
     first = ["IdCorreo"]
+    ia_cols = [c for c in IA_COLS_ORDER if c in df_all.columns]
     exec_cols = [c for c in df_all.columns if c.startswith("Ejecucion_")]
     fichas_cols = [c for c in df_all.columns if c.startswith("Fichas_") or c in {"Tiene_Ficha"}]
-    other = [c for c in df_all.columns if c not in set(first + exec_cols + fichas_cols)]
-    ordered = first + other + exec_cols + fichas_cols
+    other = [c for c in df_all.columns if c not in set(first + ia_cols + exec_cols + fichas_cols)]
+    ordered = first + ia_cols + other + exec_cols + fichas_cols
     df_all = df_all[ordered]
+
+    # Leyenda: origen (fichero) por columna.
+    ia_src = f"data/{fecha}/{cfg_get('inputs.ia_transacciones_csv', 'ia-transacciones.csv')}"
+    validaciones_csv_src = f"data/{fecha}/{cfg_get('inputs.validaciones_csv', 'validaciones.csv')}"
+    orquestador_ctx_src = f"data/{fecha}/{cfg_get('inputs.orquestador_contexto_csv', 'orquestador_contexto.csv')}"
+    fichas_csv_src = f"data/{fecha}/{cfg_get('inputs.fichas_levantadas_csv', 'fichas_levantadas.csv')}"
+
+    validaciones_xlsx_src = f"{output_dir / str(cfg_get('outputs.validaciones_xlsx', 'validaciones.xlsx'))}"
+    ejecuciones_xlsx_src = f"{output_dir / str(cfg_get('outputs.ejecuciones_xlsx', 'ejecuciones.xlsx'))}"
+    fichas_xlsx_src = f"{output_dir / str(cfg_get('outputs.fichas_levantadas_xlsx', 'fichas_levantadas.xlsx'))}"
+
+    def _origin_for_col(col: str) -> str:
+        if col == "IdCorreo":
+            return ia_src if started_from_ia else validaciones_csv_src
+        if col in {"idLotus", *IA_COLS_ORDER}:
+            return ia_src
+        if col in df_val.columns:
+            return f"{validaciones_xlsx_src} (derivado de {validaciones_csv_src} + {ia_src})"
+        if col.startswith("Ejecucion_"):
+            return f"{ejecuciones_xlsx_src} (derivado de {validaciones_xlsx_src} + {orquestador_ctx_src})"
+        if col.startswith("Fichas_") or col == "Tiene_Ficha":
+            return f"{fichas_xlsx_src} (derivado de {fichas_csv_src})"
+        return "calculado en all_report.py"
+
+    df_leyenda = pd.DataFrame(
+        [{"Columna": c, "Origen": _origin_for_col(str(c))} for c in df_all.columns]
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            df_all.to_excel(writer, sheet_name="Data", index=False)
+            _sanitize_df_for_excel(df_all).to_excel(writer, sheet_name="Data", index=False)
+            _sanitize_df_for_excel(df_leyenda).to_excel(writer, sheet_name="Leyenda", index=False)
     except PermissionError as exc:
         logger.warning("All: no se pudo escribir %s (esta abierto en Excel?): %s", out_path, exc)
         return

@@ -1,8 +1,9 @@
 {
   "default": 1.0,
   "automatismo": {
-    "Apertura avería fijo": 1.0,
-    "Apertura avería móvil": 1.0,
+    "Accion no requerida": 1.5,
+    "Apertura avería fijo": 1.5,
+    "Apertura avería móvil": 1.5,
     "Baja de linea": 1.0,
     "Desvio de llamadas": 1.0,
     "Duplicado de factura": 1.0,
@@ -15,5 +16,9 @@
     "ME": 1.0,
     "PE": 1.0
   },
-  "pair": {}
+  "pair": {},
+  "fixed": {
+    "Accion no requerida": 25
+  },
+  "required_fields": ["Question", "MailToAgent"]
 }

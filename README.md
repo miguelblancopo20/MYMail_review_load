@@ -116,12 +116,13 @@ Nota 2: si la plantilla esta en OneDrive (Files On-Demand), asegurate de que el 
 
 #### Muestreo `validaciones_revision.xlsx` (NO VALIDADOS)
 
-Se genera a partir de `validaciones.xlsx` (hoja `Data`) filtrando `Validado != "VALIDADO"` y estratificando por (`Automatismo`, `Segmento`).
+Se genera a partir de `validaciones.xlsx` (hoja `Data`) filtrando `Validado != "VALIDADO"` (e incluyendo siempre `Automatismo == "Accion no requerida"`) y estratificando por (`Automatismo`, `Segmento`).
 
-1) Pesos (ponderaciones)
+1) Pesos (ponderaciones) y cupos fijos
 
 - Se leen de `validaciones_revision_pesos.json` (misma carpeta que `script_semanal.py`; si no existe, se crea con 1.0).
 - Peso final por estrato = `default * automatismo[Automatismo] * segmento[Segmento] * pair["Automatismo||Segmento"]`.
+- Opcionalmente se pueden definir cupos fijos dentro de `fixed` (p.ej. `"Accion no requerida": 2`), que se restan del presupuesto total y se muestrean desde `ia-transacciones.csv`.
 
 2) Regla anti-sesgo para pocos casos
 

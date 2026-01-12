@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +16,101 @@ from .paths import get_dirs, repo_root
 from .subtematicas import build_merged_df
 
 logger = logging.getLogger(__name__)
+
+
+_MESES_ESP_ABBR = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _parse_fecha_folder(fecha: str) -> datetime | None:
+    """
+    Intenta interpretar `fecha` (nombre de carpeta) como una fecha calendario tipo "5enero" o "5_enero".
+    Si no se puede interpretar, devuelve None.
+    """
+
+    raw = str(fecha or "").strip()
+    if not raw:
+        return None
+
+    txt = "".join(c for c in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(c))
+    txt = txt.strip().lower()
+
+    m = re.match(r"^\s*(\d{1,2})\s*[_\-]?\s*([a-z]+)\s*(\d{2,4})?\s*$", txt)
+    if not m:
+        return None
+
+    day = int(m.group(1))
+    month_txt = m.group(2)
+    year_txt = m.group(3)
+
+    month_map = {
+        "ene": 1,
+        "enero": 1,
+        "feb": 2,
+        "febrero": 2,
+        "mar": 3,
+        "marzo": 3,
+        "abr": 4,
+        "abril": 4,
+        "may": 5,
+        "mayo": 5,
+        "jun": 6,
+        "junio": 6,
+        "jul": 7,
+        "julio": 7,
+        "ago": 8,
+        "agosto": 8,
+        "sep": 9,
+        "sept": 9,
+        "septiembre": 9,
+        "set": 9,
+        "setiembre": 9,
+        "oct": 10,
+        "octubre": 10,
+        "nov": 11,
+        "noviembre": 11,
+        "dic": 12,
+        "diciembre": 12,
+    }
+
+    month = month_map.get(month_txt[:3]) or month_map.get(month_txt)
+    if not month:
+        return None
+
+    today = datetime.now()
+    if year_txt:
+        year = int(year_txt)
+        if year < 100:
+            year += 2000
+    else:
+        year = today.year
+        if today.month == 1 and month == 12:
+            year -= 1
+
+    try:
+        return datetime(year, month, day)
+    except ValueError:
+        return None
+
+
+def _format_rango_cabecera(fecha: str) -> str:
+    """
+    Muestra el período semanal en formato "29-dic - 2-ene".
+
+    Se interpreta `fecha` como el lunes del "siguiente" tramo, y se devuelve el rango
+    de lunes a viernes de la semana anterior.
+    """
+
+    ref = _parse_fecha_folder(fecha)
+    if ref is None:
+        return str(fecha)
+
+    desde = ref - timedelta(days=7)
+    hasta = ref - timedelta(days=3)
+
+    return (
+        f"{desde.day}-{_MESES_ESP_ABBR[desde.month - 1]}"
+        f" - {hasta.day}-{_MESES_ESP_ABBR[hasta.month - 1]}"
+    )
 
 
 def _stats_from_validaciones(fecha: str, base_dir: Path, output_dir: Path, safe_read_excel) -> dict[str, pd.DataFrame]:
@@ -69,6 +166,22 @@ def _build_stats_dfs(fecha: str, base_dir: Path, output_dir: Path) -> dict[str, 
     revision_xlsx = output_dir / str(cfg_get("outputs.revision_xlsx", "validaciones_revision.xlsx"))
 
     dfs: dict[str, pd.DataFrame] = {}
+
+    # (0) Maestro: diccionario de temáticas/subtemáticas para trazabilidad del cálculo en Stats.
+    dfs["Maestro"] = pd.DataFrame(
+        [
+            {"tematica": "AyB de Servicios", "subtematica": "Alta PS"},
+            {"tematica": "Alta de averías fija", "subtematica": "Apertura Avería Fijo"},
+            {"tematica": "Alta de averías móvil", "subtematica": "Apertura Avería Móvil"},
+            {"tematica": "Baja de Línea", "subtematica": "Baja Línea"},
+            {"tematica": "Baja de Línea", "subtematica": "Baja Línea Fija"},
+            {"tematica": "AyB de Servicios", "subtematica": "Baja PS"},
+            {"tematica": "Desvio de llamadas", "subtematica": "Desvíos Llamadas"},
+            {"tematica": "Desvio de llamadas", "subtematica": "Desvíos Llamadas Fijas"},
+            {"tematica": "Reparación de terminales", "subtematica": "Reparacion Terminales"},
+            {"tematica": "Servicio multisim", "subtematica": "Servicio Multisim"},
+        ]
+    )
 
     # (A) Validaciones (extraido a helper)
     dfs.update(_stats_from_validaciones(fecha, base_dir, output_dir, safe_read_excel))
@@ -233,9 +346,22 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     seg_pe_sub = _find_seg_col(df_seg_subtematica, ["PE"])
 
     def _build_row_map(df: pd.DataFrame, key_col: str) -> dict[str, dict]:
+        # Normaliza la clave (sin acentos/mayúsculas) y agrega duplicados sumando columnas numéricas.
+        # Esto evita desajustes por variantes de texto (p.ej. con/sin acentos) que, de otro modo,
+        # acabarían sobrescribiéndose o duplicándose al sumar.
+        df2 = df.copy()
+        df2["__key__"] = df2[key_col].apply(_norm)
+
+        value_cols = [c for c in df2.columns if c not in (key_col, "__key__")]
+        for c in value_cols:
+            df2[c] = pd.to_numeric(df2[c], errors="coerce").fillna(0)
+
+        grouped = df2.groupby("__key__", dropna=False)[value_cols].sum().reset_index()
         out_map: dict[str, dict] = {}
-        for _, r in df.iterrows():
-            out_map[_norm(r.get(key_col))] = r.to_dict()
+        for _, r in grouped.iterrows():
+            d = r.to_dict()
+            key = str(d.pop("__key__"))
+            out_map[key] = d
         return out_map
 
     map_tematica = _build_row_map(df_seg_tematica, "Location")
@@ -296,6 +422,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
             "Apertura Avería Fijo",
             "Apertura Avería Móvil",
             "Desvíos Llamadas",
+            "Desvíos Llamadas Fijas",
             "Servicio Multisim",
         ],
         (seg_gc_sub, seg_me_sub, seg_pe_sub),
@@ -316,16 +443,24 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     )
 
     wb = load_workbook(stats_path)
-    ws = wb["Sheet1"] if "Sheet1" in wb.sheetnames else wb.active
 
-    ws.cell(row=1, column=3).value = fecha
+    if "Estadisticas" in wb.sheetnames:
+        ws = wb["Estadisticas"]
+    elif "Sheet1" in wb.sheetnames:
+        ws = wb["Sheet1"]
+    else:
+        ws = wb.active
+
+    if ws.title != "Estadisticas":
+        ws.title = "Estadisticas"
+
+    ws.cell(row=1, column=3).value = _format_rango_cabecera(fecha)
     pct_number_format = "0.0%"
 
     def _format_pct_row(row: int) -> None:
         for col in (3, 4, 5, 6):
             cell = ws.cell(row=row, column=col)
-            if isinstance(cell.value, (int, float)):
-                cell.number_format = pct_number_format
+            cell.number_format = pct_number_format
 
     def _set_row(row: int, ggcc=None, me=None, pe=None, agg=None, only_agg: bool = False):
         if not only_agg:
@@ -397,7 +532,11 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     movil_boton = _counts_from_map(map_fichas, "Apertura avería móvil", ("GGCC", "ME", "PE"))
     _fill_block(29, 30, 31, 32, movil_total, movil_boton)
 
-    desvio_total = _counts_from_map(map_sub, "Desvíos Llamadas", (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    desvio_total = _sum_counts(
+        map_sub,
+        ["Desvíos Llamadas", "Desvíos Llamadas Fijas"],
+        (seg_gc_sub, seg_me_sub, seg_pe_sub),
+    )
     desvio_boton = _counts_from_map(map_fichas, "Desvio de llamadas", ("GGCC", "ME", "PE"))
     _fill_block(34, 35, 36, 37, desvio_total, desvio_boton)
 

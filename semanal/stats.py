@@ -416,13 +416,11 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
         [
             "Duplicado de factura",
             "Baja Línea",
-            "Baja Línea Fija",
             "Alta PS",
             "Baja PS",
             "Apertura Avería Fijo",
             "Apertura Avería Móvil",
             "Desvíos Llamadas",
-            "Desvíos Llamadas Fijas",
             "Servicio Multisim",
         ],
         (seg_gc_sub, seg_me_sub, seg_pe_sub),
@@ -516,7 +514,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
     dup_boton = _counts_from_map(map_fichas, "Duplicado de factura", ("GGCC", "ME", "PE"))
     _fill_block(9, 10, 11, 12, dup_total, dup_boton)
 
-    baja_total = _sum_counts(map_sub, ["Baja Línea", "Baja Línea Fija"], (seg_gc_sub, seg_me_sub, seg_pe_sub))
+    baja_total = _sum_counts(map_sub, ["Baja Línea"], (seg_gc_sub, seg_me_sub, seg_pe_sub))
     baja_boton = _counts_from_map(map_fichas, "Baja de linea", ("GGCC", "ME", "PE"))
     _fill_block(14, 15, 16, 17, baja_total, baja_boton)
 
@@ -534,7 +532,7 @@ def _rellenar_plantilla_stats(stats_path: Path, fecha: str, base_dir: Path, outp
 
     desvio_total = _sum_counts(
         map_sub,
-        ["Desvíos Llamadas", "Desvíos Llamadas Fijas"],
+        ["Desvíos Llamadas"],
         (seg_gc_sub, seg_me_sub, seg_pe_sub),
     )
     desvio_boton = _counts_from_map(map_fichas, "Desvio de llamadas", ("GGCC", "ME", "PE"))
